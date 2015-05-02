@@ -1,0 +1,20 @@
+Using the following script to launch OSv with workable IP address, and full networking functionality
+Needs to do some changes to ifup.sh, which is a temporarily fix for the error of incorrectly configured if port and device name. Have no clue what's the root cause of it.
+Launching script: sudo qemu-system-x86_64  -m 2G -smp 4 -device virtio-blk-pci,id=blk0,bootindex=0,drive=hd0,scsi=off -drive file=/home/abc/osv7/build/release/usr.img,if=none,id=hd0,aio=native,cache=none -netdev tap,id=hn0,script=scripts/qemu-ifup.sh,vhost=on -device virtio-net-pci,netdev=hn0,id=nic0,mac=DE:AD:BE:EF:76:0E	 -redir tcp:2222::22 -device virtio-rng-pci -enable-kvm -cpu host,+x2apic -chardev stdio,mux=on,id=stdio,signal=off -mon chardev=stdio,mode=readline,default -device isa-serial,chardev=stdio
+
+If script: 
+
+file_name: qemu-ifup.sh
+
+content:
+
+#!/bin/sh
+
+brctl stp virbr0 off
+brctl addif virbr0 tap1
+ifconfig tap1 up
+
+#where the tap1 is the device name of the newly added tap device ONLY for this OSv instance. Need another one for another OSv instance.
+
+
+
