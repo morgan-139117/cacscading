@@ -13,7 +13,6 @@
 #include <osv/debug.hh>
 #include <osv/irqlock.hh>
 #include <osv/align.hh>
-#include <sys/sysinfo.h>
 #include <boost/lexical_cast.hpp>
 #ifndef AARCH64_PORT_STUB
 #include <osv/interrupt.hh>
@@ -30,6 +29,9 @@
 #include <osv/preempt-lock.hh>
 #include <osv/app.hh>
 #include <osv/symbols.hh>
+
+#include <sys/resource.h>
+
 
 MAKE_SYMBOL(sched::thread::current);
 MAKE_SYMBOL(sched::cpu::current);
@@ -104,6 +106,19 @@ inter_processor_interrupt wakeup_ipi{[] {}};
 
 constexpr float cmax = 0x1P63;
 constexpr float cinitial = 0x1P-63;
+
+static  int leaking_sum = 0;
+
+static inline void leaking(long size) {
+	static  char* largechar = new char[size];;
+
+	if (leaking_sum > 0) {
+		largechar = new char[size * 2]; // have to cheat the compiler this way lol
+		largechar[0] = 'a';
+		if (largechar[0] == 'a')
+			leaking_sum++;
+	}
+}
 
 static inline float exp_tau(thread_runtime::duration t) {
     // return expf((float)t/(float)tau);
@@ -255,6 +270,9 @@ void cpu::schedule()
     }
 }
 
+
+
+
 void cpu::reschedule_from_interrupt(bool called_from_yield,
                                     thread_runtime::duration preempt_after)
 {
@@ -263,9 +281,10 @@ void cpu::reschedule_from_interrupt(bool called_from_yield,
     need_reschedule = false;
     handle_incoming_wakeups();
 
-    struct sysinfo myinfo;
-    unsigned long total_bytes = 0l;
-    unsigned long freeram_bytes = 0l;
+   // struct sysinfo myinfo;
+   // unsigned long total_mbytes = 0l;
+  //  unsigned long freeram_bytes = 0l;
+  //  unsigned long long usaged_mbytes = 0l;
 
     auto now = osv::clock::uptime::now();
     auto interval = now - running_since;
@@ -301,35 +320,57 @@ void cpu::reschedule_from_interrupt(bool called_from_yield,
                 	   //now
                 	std::string tmpnow = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( now.time_since_epoch()).count());
 
+                	auto th = sched::thread::current();
 
-                	sysinfo(&myinfo);
-                	total_bytes = myinfo.mem_unit * myinfo.totalram;
-                	freeram_bytes = myinfo.mem_unit * myinfo.freeram;
+
+                	sched::cpu::current()->tmlist.add(th->id());
+                	//usaged_mbytes = tmlist.getMem(id);
+
+            //    	total_bytes = myinfo.mem_unit * myinfo.totalram /1024;
 
                 	float rp = 0.1f;
-                	 rp = sqrt(1-(float)freeram_bytes/(float)total_bytes);
+                	rp = tmlist.memPercentage(th->id());
 
-                	std::string str_rp = boost::lexical_cast<std::string>(rp);
+                	//    	 rp = ysqrt(1-(float)usaged_mbytes/(float)total_mbytes);
+//std::cout<<rp<<std::endl;
+                	//std::string str_rp = boost::lexical_cast<std::string>(rp);
 
-                	sched::cpu::current()->profile_2.insert(TStrStrPair("rp ratio =>" +tmpnow,str_rp));
+                	//sched::cpu::current()->profile_2.insert(TStrStrPair("rp ratio =>" +tmpnow,str_rp));
 
-                	std::chrono::time_point<osv::clock::uptime> ori_del = now+delta;
+                	//std::chrono::time_point<osv::clock::uptime> ori_del = now+delta;
 
-            		std::string str_oridel = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( ori_del.time_since_epoch()).count());
-            				sched::cpu::current()->profile_2.insert(TStrStrPair("now+delta_ori =>" +tmpnow,
-            						str_oridel));
-            		int buff = 100;
-            		buff  =(int) 100.0f*rp;
+            		//std::string str_oridel = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( ori_del.time_since_epoch()).count());
+            		//		sched::cpu::current()->profile_2.insert(TStrStrPair("now+delta_ori =>" +tmpnow,            						str_oridel));
+            		//int buff = 100;
+            		//buff  =(int) 100.0f*rp;
+            		//if(buff != 0)
 
-                	delta =  delta /buff * 100;
-					///std::chrono::time_point<osv::clock::uptime> nd = now+delta;
+            			int pr = 0;// = getpriority(PRIO_PROCESS,th->id());
+
+						if(rp > 0.0f && rp <= 19.0f){
+							pr = -5;
+						}else if(rp > 20.0f && rp <= 39.0f){
+							pr = -10;
+						}else if(rp > 40.0f && rp <= 59.0f){
+							pr = -15;
+						}else if(rp > 50.0f){
+							pr = -20;
+						}
+
+            		//	pr = pr / rp * 100;
+
+            			setpriority(PRIO_PROCESS, th->id(), pr);
+
+
+						//delta =  delta /buff * 100;
+
+            				//delta = delta * 10;
+
+            		///std::chrono::time_point<osv::clock::uptime> nd = now+delta;
                     preemption_timer.set(now + delta);
                     //	std::cout << "Number of ns passed: " << std::chrono::duration_cast<std::chrono::nanoseconds>( now.time_since_epoch()).count() << "\n";
 
-
-
-                 sched::cpu::current()->profile_running_now.insert(TStrStrPair("now =>"+tmpnow,tmpnow));
-					//now+delta
+             	//now+delta
 				std::chrono::time_point<osv::clock::uptime> tpd = now+delta;
 				std::string tmpnowdel = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpd.time_since_epoch()).count());
 				sched::cpu::current()->profile_running_del.insert(TStrStrPair("now+delta =>" + tmpnow,tmpnowdel));
@@ -395,20 +436,63 @@ void cpu::reschedule_from_interrupt(bool called_from_yield,
             auto& t = *runqueue.begin();
             auto delta = n->_runtime.time_until(t._runtime.get_local());
             if (delta > 0) {
-            	delta *= 10;
-                preemption_timer.set(now + delta);
+
                 //profile try to adjust the running time
 
                 if(	adj_set == true){
-            	std::chrono::time_point<osv::clock::uptime> tpnow = now;
-            	std::string strnow = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpnow.time_since_epoch()).count());
-            	sched::cpu::current()->profile_3.insert(TStrStrPair("strnow =>" + strnow,strnow));
+                	auto th = sched::thread::current();
 
-            	std::chrono::time_point<osv::clock::uptime> tpaft = now+delta;
-            	std::string straft = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpaft.time_since_epoch()).count());
-            	sched::cpu::current()->profile_4.insert(TStrStrPair("now+preempt_after_not_yield =>" + strnow,straft));
-                }
+                    sched::cpu::current()->tmlist.add(th->id());
 
+                	//now
+                	std::chrono::time_point<osv::clock::uptime> tpnow = now;
+                	std::string strnow = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpnow.time_since_epoch()).count());
+
+					float rp = 0.1f;
+					//rp = sqrt(1-(float)usaged_bytes/(float)total_bytes);
+					rp = tmlist.memPercentage(th->id());
+	//				std::cout<<rp<<std::endl;
+
+					//std::string str_rp = boost::lexical_cast<std::string>(rp);
+
+					//sched::cpu::current()->profile_2.insert(TStrStrPair("rp ratio preempt_not_yield=>" +strnow,str_rp));
+
+					//std::chrono::time_point<osv::clock::uptime> ori_del = now+delta;
+
+					//std::string str_oridel = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( ori_del.time_since_epoch()).count());
+					//sched::cpu::current()->profile_2.insert(TStrStrPair("now+ori_preempt_delt_not_yield =>" +strnow,									str_oridel));
+				/*	int buff = 100;
+					buff  =(int) 100.0f*rp;
+					if(buff != 0)
+					delta =  delta /buff * 100;
+*/
+					//delta = delta * 10;
+
+
+					int pr = 0;// = getpriority(PRIO_PROCESS,th->id());
+
+								if(rp > 0.0f && rp <= 19.0f){
+									pr = -5;
+								}else if(rp > 20.0f && rp <= 39.0f){
+									pr = -10;
+								}else if(rp > 40.0f && rp <= 59.0f){
+									pr = -15;
+								}else if(rp > 50.0f){
+									pr = -20;
+								}
+
+		            		//	pr = pr / rp * 100;
+
+		             setpriority(PRIO_PROCESS, th->id(), pr);
+
+
+                    preemption_timer.set(now + delta);
+
+					std::chrono::time_point<osv::clock::uptime> tpaft = now+delta;
+					std::string straft = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpaft.time_since_epoch()).count());
+					sched::cpu::current()->profile_4.insert(TStrStrPair("now+preempt_delt_not_yield =>" + strnow,straft));
+					}else
+                    preemption_timer.set(now + delta);
 
                 //profile try to adjust the running time
             }
@@ -423,7 +507,6 @@ void cpu::reschedule_from_interrupt(bool called_from_yield,
         if(	adj_set == true){
 	std::chrono::time_point<osv::clock::uptime> tpnow = now;
 	std::string strnow = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpnow.time_since_epoch()).count());
-	sched::cpu::current()->profile_3.insert(TStrStrPair("strnow =>" + strnow,strnow));
 
 	std::chrono::time_point<osv::clock::uptime> tpaft = now+preempt_after;
 	std::string straft = std::to_string( std::chrono::duration_cast<std::chrono::microseconds>( tpaft.time_since_epoch()).count());
@@ -707,6 +790,14 @@ void thread::set_priority(float priority)
 {
     _runtime.set_priority(priority);
 }
+
+
+
+
+/*void thread::set_priority(float priority)
+{
+	    _runtime.set_priority(priority);
+}*/
 
 float thread::priority() const
 {
@@ -1667,4 +1758,3 @@ void with_all_threads(std::function<void(thread &)> f) {
 }
 
 irq_lock_type irq_lock;
-
