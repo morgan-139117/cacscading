@@ -25,6 +25,8 @@
 #include <osv/rcu.hh>
 #include <osv/clock.hh>
 #include <osv/timer-set.hh>
+#include <sys/sysinfo.h>
+
 
 typedef float runtime_t;
 
@@ -283,6 +285,9 @@ public:
     void set_priority(runtime_t priority) {
         _priority = priority;
     }
+  /*  void set_mm_id(unsigned int id) {
+        _mm_id = id;
+    }*/
 
     runtime_t priority() const {
         return _priority;
@@ -294,9 +299,11 @@ public:
     // CPU's counter to copy), so we'll fix it in ran_for().
     constexpr thread_runtime(runtime_t priority) :
             _priority(priority),
+	//	     _mm_id(0),
             _Rtt(0), _renormalize_count(-1) { };
 
 private:
+ //   unsigned int _mm_id;
     runtime_t _priority;            // p in the document
     runtime_t _Rtt;                 // R'' in the document
     // If _renormalize_count == -1, it means the runtime is global
@@ -776,6 +783,112 @@ typedef std::map<std::string, std::string> TStrStrMap;
 typedef std::pair<std::string, std::string> TStrStrPair;
 
 
+
+class ThreadMemNode {
+public:
+	ThreadMemNode(int _id) {
+		id = _id;
+		mem_bytes = 0l;
+		next = NULL;
+	};
+	ThreadMemNode* next;
+	int id;
+	unsigned long long mem_bytes;
+};
+
+class ThreadMemList{
+
+private:
+	ThreadMemNode* dummy;
+	ThreadMemNode* cur;
+	int lsize;
+	struct sysinfo myinfo;
+	unsigned long long total_mbytes;
+
+public:
+
+
+	int size(){
+		return this->lsize;
+	}
+
+	bool contains(int id){
+		ThreadMemNode* s_cur = dummy;
+		while(s_cur != NULL){
+			if(s_cur->id == id){
+				return true;
+			}
+			s_cur = s_cur->next;
+		}
+	 	return false;
+	}
+
+	ThreadMemNode* getThread(int id){
+		ThreadMemNode* s_cur = dummy;
+		while(s_cur != NULL){
+			if(s_cur->id == id){
+				return s_cur;
+			}
+			s_cur = s_cur->next;
+		}
+		return NULL;
+	}
+
+	double memPercentage(int id){
+		sysinfo(&myinfo);
+		total_mbytes = myinfo.mem_unit * myinfo.totalram /1024;
+
+		float rp = 0.1f;
+		rp = (float)getMem(id)/(float)total_mbytes;
+
+		return rp;
+	}
+
+
+	ThreadMemList() {
+		dummy = new ThreadMemNode(-1);
+		cur = dummy;
+		lsize = 0;
+		total_mbytes = 0l;
+	}
+
+	bool add(int id){
+		if(contains(id)) return false;
+		cur->next = new ThreadMemNode(id);
+		cur = cur->next;
+		lsize++;
+		return true;
+	}
+
+	bool update(int id, unsigned long long mem){
+		ThreadMemNode* s_cur = getThread(id);
+		if(NULL != s_cur){
+			s_cur->mem_bytes = mem;
+			return true;
+		}
+		return false;
+	}
+
+	unsigned long long getMem(int id){
+		ThreadMemNode* s_cur = getThread(id);
+		if(NULL != s_cur){
+			return s_cur->mem_bytes;
+		}
+		return 0;
+	}
+
+	void show(){
+		ThreadMemNode* s_cur = dummy;
+		while(s_cur != NULL){
+			std::cout<<"id"<<s_cur->id<<std::endl;
+			std::cout<<"mem"<<s_cur->mem_bytes<<std::endl;
+		s_cur = s_cur->next;
+		}
+
+	}
+};
+
+
 class profilem {
 
 private:
@@ -817,6 +930,10 @@ struct cpu : private timer_base::client {
 	 profilem profile_3;
 	 profilem profile_4;
 	 profilem profile_overall;
+	 ThreadMemList tmlist;
+
+
+
 
 	//profile variables end here
 
@@ -1077,7 +1194,7 @@ template <class IntrStrategy, class Mutex, class Pred>
 inline
 void thread::do_wait_until(Mutex& mtx, Pred pred)
 {
-    assert(arch::irq_enabled());
+    //assert(arch::irq_enabled());
     assert(preemptable());
 
     thread* me = current();
@@ -1377,4 +1494,3 @@ void with_all_threads(std::function<void(sched::thread &)>);
 }
 
 #endif /* SCHED_HH_ */
-
